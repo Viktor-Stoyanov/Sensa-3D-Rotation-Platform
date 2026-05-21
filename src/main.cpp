@@ -20,6 +20,10 @@ constexpr int PIN_STEP = 40;
 constexpr int PIN_DIR  = 39;
 constexpr int PIN_EN   = 41;
 
+// On-board WS2812 RGB. Common defaults: LOLIN S2 Mini = 15, TinyS2 = 17,
+// DFRobot FireBeetle 2 = 45. Saola-1 has no RGB LED. Change if no light shows.
+constexpr int PIN_LED  = 15;
+
 // ---------- Wi-Fi AP ----------
 constexpr const char* AP_SSID = "RotationPlatform";
 constexpr const char* AP_PASS = "rotate1234";   // must be >= 8 chars for WPA2
@@ -43,6 +47,9 @@ long g_accumulator = 0;        // fractional-step accumulator for drift-free deg
 bool g_auto_on    = false;
 unsigned long g_auto_last_ms = 0;
 int  g_auto_swept_deg = 0;     // degrees rotated since this auto run started
+
+unsigned long g_led_celebrate_until = 0;
+uint32_t      g_led_current = 0xFFFFFFFFu;   // sentinel so first write always runs
 
 // ---------- web UI ----------
 constexpr const char* INDEX_HTML = R"HTML(
@@ -144,6 +151,21 @@ fetch('/state').then(r => r.text()).then(t => {
 </html>
 )HTML";
 
+// ---------- LED ----------
+void setLED(uint8_t r, uint8_t g, uint8_t b) {
+  uint32_t c = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+  if (c == g_led_current) return;          // skip writes that wouldn't change anything
+  g_led_current = c;
+  neopixelWrite(PIN_LED, r, g, b);
+}
+
+// Color the LED to reflect the current ambient state (no motion in progress).
+void setAmbientLED() {
+  if (millis() < g_led_celebrate_until) setLED(0, 40, 0);      // green: just finished a sweep
+  else if (g_auto_on)                   setLED(0, 0, 12);      // dim blue: auto armed
+  else                                  setLED(0, 0, 0);       // off: idle
+}
+
 // ---------- motor ----------
 void enableDriver(bool on) { digitalWrite(PIN_EN, on ? LOW : HIGH); }
 
@@ -176,8 +198,10 @@ void rotateDegrees(int deg) {
 
   digitalWrite(PIN_DIR, steps > 0 ? HIGH : LOW);
   delayMicroseconds(5);
+  setLED(30, 25, 0);                       // yellow while moving
   stepN(steps > 0 ? steps : -steps);
   g_total_steps += steps;
+  setAmbientLED();
 }
 
 float currentAngle() { return (g_total_steps * 360.0f) / STEPS_PER_REV; }
@@ -236,6 +260,8 @@ void setup() {
   enableDriver(true);
   delay(100);
 
+  setLED(0, 0, 0);                         // start dark
+
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
   IPAddress ip = WiFi.softAPIP();
@@ -258,6 +284,11 @@ void loop() {
     g_auto_last_ms = millis();
     rotateDegrees(AUTO_STEP_DEG);
     g_auto_swept_deg += AUTO_STEP_DEG;
-    if (g_auto_swept_deg >= 360) g_auto_on = false;   // stop after a full revolution
+    if (g_auto_swept_deg >= 360) {
+      g_auto_on = false;
+      g_led_celebrate_until = millis() + 1500;        // green flash on completion
+    }
   }
+
+  setAmbientLED();  // expires the green celebration window without needing extra timers
 }

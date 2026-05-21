@@ -42,6 +42,7 @@ long g_total_steps = 0;        // signed, cumulative position
 long g_accumulator = 0;        // fractional-step accumulator for drift-free deg moves
 bool g_auto_on    = false;
 unsigned long g_auto_last_ms = 0;
+int  g_auto_swept_deg = 0;     // degrees rotated since this auto run started
 
 // ---------- web UI ----------
 constexpr const char* INDEX_HTML = R"HTML(
@@ -110,8 +111,12 @@ async function toggleAuto() {
   applyState(await r.text());
 }
 async function refreshAngle() {
-  const r = await fetch('/angle');
-  setAngle(await r.text());
+  // poll /state instead of /angle so the button flips back when the
+  // firmware ends auto mode (e.g. after a full revolution)
+  const r = await fetch('/state');
+  const [s, a] = (await r.text()).split('|');
+  setAngle(a);
+  if (s === 'off') applyState('off');
 }
 function setAngle(t) {
   document.getElementById('pos').innerHTML = t + '&deg;';
@@ -197,7 +202,10 @@ void handleZero() {
 
 void handleAuto() {
   g_auto_on = !g_auto_on;
-  if (g_auto_on) g_auto_last_ms = millis() - AUTO_PERIOD_MS;  // step immediately
+  if (g_auto_on) {
+    g_auto_swept_deg = 0;
+    g_auto_last_ms = millis() - AUTO_PERIOD_MS;  // step immediately
+  }
   server.send(200, "text/plain", g_auto_on ? "on" : "off");
 }
 
@@ -249,5 +257,7 @@ void loop() {
   if (g_auto_on && (millis() - g_auto_last_ms) >= AUTO_PERIOD_MS) {
     g_auto_last_ms = millis();
     rotateDegrees(AUTO_STEP_DEG);
+    g_auto_swept_deg += AUTO_STEP_DEG;
+    if (g_auto_swept_deg >= 360) g_auto_on = false;   // stop after a full revolution
   }
 }
